@@ -590,6 +590,136 @@ async function startServer() {
     }
   });
 
+  // Create Settings table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT
+    );
+  `);
+
+  // Insert default settings if empty
+  const settingsCount = await db.get("SELECT COUNT(*) as count FROM settings");
+  if (settingsCount.count === 0) {
+    const defaultSettings = [
+      ['shop_name', 'My Print Shop'],
+      ['owner_name', 'John Doe'],
+      ['phone', '(555) 123-4567'],
+      ['email', 'hello@myprintshop.com'],
+      ['address', '123 Print Ave\nCity, State 12345'],
+      ['currency_symbol', '$'],
+      ['tax_rate', '10']
+    ];
+    
+    const stmt = await db.prepare('INSERT INTO settings (setting_key, setting_value) VALUES (?, ?)');
+    for (const [key, value] of defaultSettings) {
+      await stmt.run(key, value);
+    }
+    await stmt.finalize();
+  }
+
+  // --- Settings API ---
+
+  // getSettings()
+  app.get('/api/settings', async (req, res) => {
+    try {
+      const rows = await db.all('SELECT * FROM settings');
+      const settings: Record<string, string> = {};
+      rows.forEach(row => {
+        settings[row.setting_key] = row.setting_value;
+      });
+      res.json(settings);
+    } catch (error) {
+      console.error('Error fetching settings:', error);
+      res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+  });
+
+  // updateSettings(data)
+  app.put('/api/settings', async (req, res) => {
+    const settings = req.body;
+    try {
+      await db.run('BEGIN TRANSACTION');
+      const stmt = await db.prepare('INSERT OR REPLACE INTO settings (setting_key, setting_value) VALUES (?, ?)');
+      for (const [key, value] of Object.entries(settings)) {
+        await stmt.run(key, String(value));
+      }
+      await stmt.finalize();
+      await db.run('COMMIT');
+      res.json({ success: true });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error updating settings:', error);
+      res.status(500).json({ error: 'Failed to update settings' });
+    }
+  });
+
+  // --- Dashboard API ---
+
+  // getDashboardStats()
+  app.get('/api/dashboard/stats', async (req, res) => {
+    const month = req.query.month || new Date().toISOString().slice(0, 7); // Default to current month YYYY-MM
+    
+    try {
+      const [revenueResult, duesResult, expensesResult, activeJobsResult] = await Promise.all([
+        db.get("SELECT SUM(total) as total_revenue FROM invoices WHERE status = 'Paid' AND strftime('%Y-%m', date) = ?", [month]),
+        db.get("SELECT SUM(total) as outstanding_dues FROM invoices WHERE status IN ('Unpaid', 'Partial') AND strftime('%Y-%m', date) = ?", [month]),
+        db.get("SELECT SUM(amount) as total_expenses FROM expenses WHERE strftime('%Y-%m', date) = ?", [month]),
+        db.get("SELECT COUNT(*) as active_jobs FROM print_jobs WHERE status != 'Completed'")
+      ]);
+
+      const revenue = revenueResult?.total_revenue || 0;
+      const expenses = expensesResult?.total_expenses || 0;
+
+      res.json({
+        revenue,
+        outstanding_dues: duesResult?.outstanding_dues || 0,
+        expenses,
+        net_profit: revenue - expenses,
+        active_jobs: activeJobsResult?.active_jobs || 0
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+      res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+    }
+  });
+
+  // getDashboardActivity()
+  app.get('/api/dashboard/activity', async (req, res) => {
+    try {
+      // Fetch recent invoices
+      const invoices = await db.all(`
+        SELECT id, 'invoice' as type, invoice_number as reference, status, total as amount, created_at as timestamp 
+        FROM invoices 
+        ORDER BY created_at DESC LIMIT 5
+      `);
+
+      // Fetch recent print jobs
+      const jobs = await db.all(`
+        SELECT id, 'job' as type, title as reference, status, NULL as amount, created_at as timestamp 
+        FROM print_jobs 
+        ORDER BY created_at DESC LIMIT 5
+      `);
+
+      // Fetch recent expenses
+      const expenses = await db.all(`
+        SELECT id, 'expense' as type, category as reference, NULL as status, amount, created_at as timestamp 
+        FROM expenses 
+        ORDER BY created_at DESC LIMIT 5
+      `);
+
+      // Combine, sort, and slice
+      const allActivity = [...invoices, ...jobs, ...expenses]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 10);
+
+      res.json(allActivity);
+    } catch (error) {
+      console.error('Error fetching dashboard activity:', error);
+      res.status(500).json({ error: 'Failed to fetch dashboard activity' });
+    }
+  });
+
   // --- Electron IPC Backend Logic (Main Process Equivalent) ---
 
   // getInvoices()

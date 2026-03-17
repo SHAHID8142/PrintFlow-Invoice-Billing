@@ -4,8 +4,9 @@
  */
 
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { FileText, PlusCircle, LayoutDashboard, Users, Package, Briefcase, DollarSign } from 'lucide-react';
+import { FileText, PlusCircle, LayoutDashboard, Users, Package, Briefcase, DollarSign, Building2, Settings } from 'lucide-react';
 import clsx from 'clsx';
+import Dashboard from './components/Dashboard';
 import InvoiceList from './components/InvoiceList';
 import CreateInvoice from './components/CreateInvoice';
 import InvoicePrintView from './components/InvoicePrintView';
@@ -17,16 +18,24 @@ import InventoryForm from './components/InventoryForm';
 import JobBoard from './components/JobBoard';
 import JobForm from './components/JobForm';
 import FinanceDashboard from './components/FinanceDashboard';
+import SupplierList from './components/SupplierList';
+import SupplierForm from './components/SupplierForm';
+import SupplierProfile from './components/SupplierProfile';
+import SettingsLayout from './components/SettingsLayout';
+import { SettingsProvider } from './components/SettingsContext';
 
 function Navigation() {
   const location = useLocation();
   
   const navItems = [
-    { path: '/', label: 'Invoices', icon: FileText },
+    { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+    { path: '/invoices', label: 'Invoices', icon: FileText },
     { path: '/clients', label: 'Clients', icon: Users },
     { path: '/inventory', label: 'Inventory', icon: Package },
     { path: '/jobs', label: 'Production', icon: Briefcase },
     { path: '/finance', label: 'Finance', icon: DollarSign },
+    { path: '/suppliers', label: 'Suppliers', icon: Building2 },
+    { path: '/settings', label: 'Settings', icon: Settings },
     { path: '/create', label: 'Create Invoice', icon: PlusCircle },
   ];
 
@@ -69,33 +78,43 @@ function Navigation() {
 
 export default function App() {
   return (
-    <Router>
-      <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
-        <Navigation />
+    <SettingsProvider>
+      <Router>
+        <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
+          <Navigation />
 
-        {/* Main Content Area */}
-        <main className="flex-1 max-w-7xl w-full mx-auto py-8 px-4 sm:px-6 lg:px-8">
-          <Routes>
-            <Route path="/" element={<InvoiceList />} />
-            <Route path="/create" element={<CreateInvoice />} />
-            <Route path="/invoice/:id" element={<InvoicePrintView />} />
-            
-            <Route path="/clients" element={<ClientList />} />
-            <Route path="/clients/new" element={<ClientForm />} />
-            <Route path="/clients/:id" element={<ClientProfile />} />
-            <Route path="/clients/:id/edit" element={<ClientForm />} />
-            
-            <Route path="/inventory" element={<InventoryList />} />
-            <Route path="/inventory/new" element={<InventoryForm />} />
-            <Route path="/inventory/:id/edit" element={<InventoryForm />} />
-            
-            <Route path="/jobs" element={<JobBoard />} />
-            <Route path="/jobs/new" element={<JobForm />} />
-            
-            <Route path="/finance" element={<FinanceDashboard />} />
-          </Routes>
-        </main>
-      </div>
-    </Router>
+          {/* Main Content Area */}
+          <main className="flex-1 max-w-7xl w-full mx-auto py-8 px-4 sm:px-6 lg:px-8">
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/invoices" element={<InvoiceList />} />
+              <Route path="/create" element={<CreateInvoice />} />
+              <Route path="/invoice/:id" element={<InvoicePrintView />} />
+              
+              <Route path="/clients" element={<ClientList />} />
+              <Route path="/clients/new" element={<ClientForm />} />
+              <Route path="/clients/:id" element={<ClientProfile />} />
+              <Route path="/clients/:id/edit" element={<ClientForm />} />
+              
+              <Route path="/inventory" element={<InventoryList />} />
+              <Route path="/inventory/new" element={<InventoryForm />} />
+              <Route path="/inventory/:id/edit" element={<InventoryForm />} />
+              
+              <Route path="/jobs" element={<JobBoard />} />
+              <Route path="/jobs/new" element={<JobForm />} />
+              
+              <Route path="/finance" element={<FinanceDashboard />} />
+
+              <Route path="/suppliers" element={<SupplierList />} />
+              <Route path="/suppliers/new" element={<SupplierForm />} />
+              <Route path="/suppliers/:id" element={<SupplierProfile />} />
+              <Route path="/suppliers/:id/edit" element={<SupplierForm />} />
+
+              <Route path="/settings" element={<SettingsLayout />} />
+            </Routes>
+          </main>
+        </div>
+      </Router>
+    </SettingsProvider>
   );
 }
