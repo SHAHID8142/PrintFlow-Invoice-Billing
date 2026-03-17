@@ -1,0 +1,5 @@
+{
+  "name": "PrintFlow Invoice & Billing",
+  "description": "A clean, minimal, offline-first invoice and billing system for a printing business.",
+  "requestFramePermissions": []
+}
