@@ -45,6 +45,18 @@ async function setupDatabase() {
       FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS print_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      client_id INTEGER NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL CHECK(status IN ('Pending', 'In Production', 'Finishing', 'Ready for Pickup', 'Completed')),
+      due_date DATE NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT
+    );
+
     CREATE TABLE IF NOT EXISTS invoices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       invoice_number TEXT UNIQUE NOT NULL,
@@ -269,6 +281,95 @@ async function startServer() {
       await db.run('ROLLBACK');
       console.error('Error adjusting stock:', error);
       res.status(500).json({ error: 'Failed to adjust stock' });
+    }
+  });
+
+  // --- Job Production API ---
+
+  // getJobs()
+  app.get('/api/jobs', async (req, res) => {
+    try {
+      const jobs = await db.all(`
+        SELECT j.*, c.full_name as client_name, c.company_name
+        FROM print_jobs j
+        LEFT JOIN clients c ON j.client_id = c.id
+        ORDER BY j.due_date ASC
+      `);
+      res.json(jobs);
+    } catch (error) {
+      console.error('Error fetching jobs:', error);
+      res.status(500).json({ error: 'Failed to fetch jobs' });
+    }
+  });
+
+  // getJobById(id)
+  app.get('/api/jobs/:id', async (req, res) => {
+    try {
+      const job = await db.get(`
+        SELECT j.*, c.full_name as client_name, c.company_name
+        FROM print_jobs j
+        LEFT JOIN clients c ON j.client_id = c.id
+        WHERE j.id = ?
+      `, req.params.id);
+      
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      res.json(job);
+    } catch (error) {
+      console.error('Error fetching job:', error);
+      res.status(500).json({ error: 'Failed to fetch job' });
+    }
+  });
+
+  // createJob(data)
+  app.post('/api/jobs', async (req, res) => {
+    const { title, client_id, description, status, due_date } = req.body;
+    try {
+      const result = await db.run(
+        `INSERT INTO print_jobs (title, client_id, description, status, due_date) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [title, client_id, description, status || 'Pending', due_date]
+      );
+      res.status(201).json({ id: result.lastID });
+    } catch (error) {
+      console.error('Error creating job:', error);
+      res.status(500).json({ error: 'Failed to create job' });
+    }
+  });
+
+  // updateJob(id, data)
+  app.put('/api/jobs/:id', async (req, res) => {
+    const { title, client_id, description, status, due_date } = req.body;
+    try {
+      await db.run(
+        `UPDATE print_jobs 
+         SET title = ?, client_id = ?, description = ?, status = ?, due_date = ?, updated_at = CURRENT_TIMESTAMP 
+         WHERE id = ?`,
+        [title, client_id, description, status, due_date, req.params.id]
+      );
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating job:', error);
+      res.status(500).json({ error: 'Failed to update job' });
+    }
+  });
+
+  // updateJobStatus(id, status)
+  app.patch('/api/jobs/:id/status', async (req, res) => {
+    const { status } = req.body;
+    if (!['Pending', 'In Production', 'Finishing', 'Ready for Pickup', 'Completed'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    try {
+      await db.run(
+        `UPDATE print_jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [status, req.params.id]
+      );
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating job status:', error);
+      res.status(500).json({ error: 'Failed to update job status' });
     }
   });
 

@@ -4,7 +4,7 @@
  */
 
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { FileText, PlusCircle, LayoutDashboard, Users, Package } from 'lucide-react';
+import { FileText, PlusCircle, LayoutDashboard, Users, Package, Briefcase } from 'lucide-react';
 import clsx from 'clsx';
 import InvoiceList from './components/InvoiceList';
 import CreateInvoice from './components/CreateInvoice';
@@ -14,6 +14,8 @@ import ClientForm from './components/ClientForm';
 import ClientProfile from './components/ClientProfile';
 import InventoryList from './components/InventoryList';
 import InventoryForm from './components/InventoryForm';
+import JobBoard from './components/JobBoard';
+import JobForm from './components/JobForm';
 
 function Navigation() {
   const location = useLocation();
@@ -22,6 +24,7 @@ function Navigation() {
     { path: '/', label: 'Invoices', icon: FileText },
     { path: '/clients', label: 'Clients', icon: Users },
     { path: '/inventory', label: 'Inventory', icon: Package },
+    { path: '/jobs', label: 'Production', icon: Briefcase },
     { path: '/create', label: 'Create Invoice', icon: PlusCircle },
   ];
 
@@ -83,6 +86,9 @@ export default function App() {
             <Route path="/inventory" element={<InventoryList />} />
             <Route path="/inventory/new" element={<InventoryForm />} />
             <Route path="/inventory/:id/edit" element={<InventoryForm />} />
+            
+            <Route path="/jobs" element={<JobBoard />} />
+            <Route path="/jobs/new" element={<JobForm />} />
           </Routes>
         </main>
       </div>
