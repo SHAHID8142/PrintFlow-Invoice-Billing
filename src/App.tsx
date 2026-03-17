@@ -4,7 +4,7 @@
  */
 
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { FileText, PlusCircle, LayoutDashboard, Users, Package, Briefcase } from 'lucide-react';
+import { FileText, PlusCircle, LayoutDashboard, Users, Package, Briefcase, DollarSign } from 'lucide-react';
 import clsx from 'clsx';
 import InvoiceList from './components/InvoiceList';
 import CreateInvoice from './components/CreateInvoice';
@@ -16,6 +16,7 @@ import InventoryList from './components/InventoryList';
 import InventoryForm from './components/InventoryForm';
 import JobBoard from './components/JobBoard';
 import JobForm from './components/JobForm';
+import FinanceDashboard from './components/FinanceDashboard';
 
 function Navigation() {
   const location = useLocation();
@@ -25,6 +26,7 @@ function Navigation() {
     { path: '/clients', label: 'Clients', icon: Users },
     { path: '/inventory', label: 'Inventory', icon: Package },
     { path: '/jobs', label: 'Production', icon: Briefcase },
+    { path: '/finance', label: 'Finance', icon: DollarSign },
     { path: '/create', label: 'Create Invoice', icon: PlusCircle },
   ];
 
@@ -89,6 +91,8 @@ export default function App() {
             
             <Route path="/jobs" element={<JobBoard />} />
             <Route path="/jobs/new" element={<JobForm />} />
+            
+            <Route path="/finance" element={<FinanceDashboard />} />
           </Routes>
         </main>
       </div>

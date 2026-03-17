@@ -57,6 +57,31 @@ async function setupDatabase() {
       FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT
     );
 
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_name TEXT NOT NULL,
+      contact_person TEXT,
+      phone TEXT,
+      email TEXT,
+      address TEXT,
+      tax_id TEXT,
+      supply_category TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS expenses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date DATE NOT NULL,
+      category TEXT NOT NULL,
+      description TEXT,
+      amount REAL NOT NULL,
+      payment_method TEXT NOT NULL,
+      supplier_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS invoices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       invoice_number TEXT UNIQUE NOT NULL,
@@ -83,6 +108,13 @@ async function setupDatabase() {
       FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
     );
   `);
+
+  // Check if supplier_id exists in expenses (for migration)
+  const tableInfo = await db.all("PRAGMA table_info(expenses)");
+  const hasSupplierId = tableInfo.some((col: any) => col.name === 'supplier_id');
+  if (!hasSupplierId) {
+    await db.run('ALTER TABLE expenses ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL');
+  }
 
   return db;
 }
@@ -370,6 +402,191 @@ async function startServer() {
     } catch (error) {
       console.error('Error updating job status:', error);
       res.status(500).json({ error: 'Failed to update job status' });
+    }
+  });
+
+  // --- Finance & Expenses API ---
+
+  // getExpenses()
+  app.get('/api/expenses', async (req, res) => {
+    const month = req.query.month; // Format: YYYY-MM
+    try {
+      let query = `
+        SELECT e.*, s.company_name as supplier_name 
+        FROM expenses e 
+        LEFT JOIN suppliers s ON e.supplier_id = s.id
+      `;
+      const params = [];
+      
+      if (month) {
+        query += ' WHERE strftime("%Y-%m", e.date) = ?';
+        params.push(month);
+      }
+      
+      query += ' ORDER BY e.date DESC, e.created_at DESC';
+      
+      const expenses = await db.all(query, params);
+      res.json(expenses);
+    } catch (error) {
+      console.error('Error fetching expenses:', error);
+      res.status(500).json({ error: 'Failed to fetch expenses' });
+    }
+  });
+
+  // createExpense(data)
+  app.post('/api/expenses', async (req, res) => {
+    const { date, category, description, amount, payment_method, supplier_id } = req.body;
+    try {
+      const result = await db.run(
+        `INSERT INTO expenses (date, category, description, amount, payment_method, supplier_id) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [date, category, description, amount, payment_method, supplier_id || null]
+      );
+      res.status(201).json({ id: result.lastID });
+    } catch (error) {
+      console.error('Error creating expense:', error);
+      res.status(500).json({ error: 'Failed to create expense' });
+    }
+  });
+
+  // updateExpense(id, data)
+  app.put('/api/expenses/:id', async (req, res) => {
+    const { date, category, description, amount, payment_method, supplier_id } = req.body;
+    try {
+      await db.run(
+        `UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, payment_method = ?, supplier_id = ? WHERE id = ?`,
+        [date, category, description, amount, payment_method, supplier_id || null, req.params.id]
+      );
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating expense:', error);
+      res.status(500).json({ error: 'Failed to update expense' });
+    }
+  });
+
+  // deleteExpense(id)
+  app.delete('/api/expenses/:id', async (req, res) => {
+    try {
+      await db.run('DELETE FROM expenses WHERE id = ?', req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting expense:', error);
+      res.status(500).json({ error: 'Failed to delete expense' });
+    }
+  });
+
+  // getFinanceSummary()
+  app.get('/api/finance/summary', async (req, res) => {
+    const month = req.query.month; // Format: YYYY-MM
+    
+    try {
+      let incomeQuery = "SELECT SUM(total) as total_income FROM invoices WHERE status = 'Paid'";
+      let expenseQuery = "SELECT SUM(amount) as total_expenses FROM expenses";
+      const params = [];
+
+      if (month) {
+        incomeQuery += " AND strftime('%Y-%m', issue_date) = ?";
+        expenseQuery += " WHERE strftime('%Y-%m', date) = ?";
+        params.push(month);
+      }
+
+      const incomeResult = await db.get(incomeQuery, params);
+      const expenseResult = await db.get(expenseQuery, params);
+
+      res.json({
+        income: incomeResult?.total_income || 0,
+        expenses: expenseResult?.total_expenses || 0
+      });
+    } catch (error) {
+      console.error('Error fetching finance summary:', error);
+      res.status(500).json({ error: 'Failed to fetch finance summary' });
+    }
+  });
+
+  // --- Supplier & Vendor API ---
+
+  // getSuppliers()
+  app.get('/api/suppliers', async (req, res) => {
+    try {
+      const suppliers = await db.all(`
+        SELECT s.*, COALESCE(SUM(e.amount), 0) as total_spent
+        FROM suppliers s
+        LEFT JOIN expenses e ON s.id = e.supplier_id
+        GROUP BY s.id
+        ORDER BY s.company_name ASC
+      `);
+      res.json(suppliers);
+    } catch (error) {
+      console.error('Error fetching suppliers:', error);
+      res.status(500).json({ error: 'Failed to fetch suppliers' });
+    }
+  });
+
+  // getSupplierById(id)
+  app.get('/api/suppliers/:id', async (req, res) => {
+    try {
+      const supplier = await db.get(`
+        SELECT s.*, COALESCE(SUM(e.amount), 0) as total_spent
+        FROM suppliers s
+        LEFT JOIN expenses e ON s.id = e.supplier_id
+        WHERE s.id = ?
+        GROUP BY s.id
+      `, req.params.id);
+      
+      if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+      
+      const expenses = await db.all(`
+        SELECT * FROM expenses WHERE supplier_id = ? ORDER BY date DESC
+      `, req.params.id);
+      
+      res.json({ ...supplier, expenses });
+    } catch (error) {
+      console.error('Error fetching supplier details:', error);
+      res.status(500).json({ error: 'Failed to fetch supplier details' });
+    }
+  });
+
+  // createSupplier(data)
+  app.post('/api/suppliers', async (req, res) => {
+    const { company_name, contact_person, phone, email, address, tax_id, supply_category } = req.body;
+    try {
+      const result = await db.run(
+        `INSERT INTO suppliers (company_name, contact_person, phone, email, address, tax_id, supply_category) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [company_name, contact_person, phone, email, address, tax_id, supply_category]
+      );
+      res.status(201).json({ id: result.lastID });
+    } catch (error) {
+      console.error('Error creating supplier:', error);
+      res.status(500).json({ error: 'Failed to create supplier' });
+    }
+  });
+
+  // updateSupplier(id, data)
+  app.put('/api/suppliers/:id', async (req, res) => {
+    const { company_name, contact_person, phone, email, address, tax_id, supply_category } = req.body;
+    try {
+      await db.run(
+        `UPDATE suppliers 
+         SET company_name = ?, contact_person = ?, phone = ?, email = ?, address = ?, tax_id = ?, supply_category = ?, updated_at = CURRENT_TIMESTAMP 
+         WHERE id = ?`,
+        [company_name, contact_person, phone, email, address, tax_id, supply_category, req.params.id]
+      );
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating supplier:', error);
+      res.status(500).json({ error: 'Failed to update supplier' });
+    }
+  });
+
+  // deleteSupplier(id)
+  app.delete('/api/suppliers/:id', async (req, res) => {
+    try {
+      await db.run('DELETE FROM suppliers WHERE id = ?', req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting supplier:', error);
+      res.status(500).json({ error: 'Failed to delete supplier' });
     }
   });
 
