@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Building2, DollarSign, Database } from 'lucide-react';
+import { Building2, DollarSign, Database, Users } from 'lucide-react';
 import clsx from 'clsx';
 import GeneralSettings from './GeneralSettings';
 import FinanceSettings from './FinanceSettings';
 import SystemSettings from './SystemSettings';
+import StaffManagement from './StaffManagement';
 
-type Tab = 'general' | 'finance' | 'system';
+type Tab = 'general' | 'finance' | 'system' | 'staff';
 
 export default function SettingsLayout() {
   const [activeTab, setActiveTab] = useState<Tab>('general');
@@ -13,6 +14,7 @@ export default function SettingsLayout() {
   const tabs = [
     { id: 'general', label: 'General Profile', icon: Building2 },
     { id: 'finance', label: 'Financial', icon: DollarSign },
+    { id: 'staff', label: 'Staff Management', icon: Users },
     { id: 'system', label: 'System & Data', icon: Database },
   ];
 
@@ -56,6 +58,7 @@ export default function SettingsLayout() {
           <div className="bg-white shadow-sm rounded-xl border border-slate-200 overflow-hidden">
             {activeTab === 'general' && <GeneralSettings />}
             {activeTab === 'finance' && <FinanceSettings />}
+            {activeTab === 'staff' && <StaffManagement />}
             {activeTab === 'system' && <SystemSettings />}
           </div>
         </div>

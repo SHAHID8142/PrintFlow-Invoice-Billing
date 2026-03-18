@@ -107,13 +107,126 @@ async function setupDatabase() {
       total REAL NOT NULL,
       FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS customer_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      payment_date TEXT NOT NULL,
+      payment_method TEXT NOT NULL,
+      receipt_number TEXT,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT
+    );
+
+    CREATE TABLE IF NOT EXISTS quotes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      quote_number TEXT UNIQUE NOT NULL,
+      client_id TEXT NOT NULL,
+      client_name TEXT NOT NULL,
+      date TEXT NOT NULL,
+      valid_until TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax_rate REAL NOT NULL,
+      tax_amount REAL NOT NULL,
+      discount REAL NOT NULL,
+      total REAL NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('Draft', 'Sent', 'Accepted', 'Rejected')),
+      terms TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS quote_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      quote_id INTEGER NOT NULL,
+      description TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      unit_price REAL NOT NULL,
+      total REAL NOT NULL,
+      FOREIGN KEY (quote_id) REFERENCES quotes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS vendor_bills (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INTEGER NOT NULL,
+      bill_number TEXT UNIQUE NOT NULL,
+      date TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      total REAL NOT NULL,
+      paid_amount REAL DEFAULT 0,
+      status TEXT NOT NULL CHECK(status IN ('Paid', 'Unpaid', 'Partial')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT
+    );
+
+    CREATE TABLE IF NOT EXISTS vendor_bill_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bill_id INTEGER NOT NULL,
+      inventory_item_id INTEGER,
+      description TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      unit_cost REAL NOT NULL,
+      total REAL NOT NULL,
+      FOREIGN KEY (bill_id) REFERENCES vendor_bills(id) ON DELETE CASCADE,
+      FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      date TEXT NOT NULL,
+      payment_method TEXT NOT NULL,
+      reference_number TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT
+    );
+
+    CREATE TABLE IF NOT EXISTS staff_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('Admin', 'Staff')),
+      pin_code TEXT UNIQUE NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
+  // Initialize default Admin user if staff_users is empty
+  const staffCount = await db.get('SELECT COUNT(*) as count FROM staff_users');
+  if (staffCount.count === 0) {
+    await db.run(
+      `INSERT INTO staff_users (name, role, pin_code) VALUES (?, ?, ?)`,
+      ['Owner', 'Admin', '1234']
+    );
+  }
+
   // Check if supplier_id exists in expenses (for migration)
-  const tableInfo = await db.all("PRAGMA table_info(expenses)");
-  const hasSupplierId = tableInfo.some((col: any) => col.name === 'supplier_id');
+  const expensesTableInfo = await db.all("PRAGMA table_info(expenses)");
+  const hasSupplierId = expensesTableInfo.some((col: any) => col.name === 'supplier_id');
   if (!hasSupplierId) {
     await db.run('ALTER TABLE expenses ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL');
+  }
+
+  // Check if paid_amount exists in invoices (for migration)
+  const invoicesTableInfo = await db.all("PRAGMA table_info(invoices)");
+  const hasPaidAmount = invoicesTableInfo.some((col: any) => col.name === 'paid_amount');
+  if (!hasPaidAmount) {
+    await db.run('ALTER TABLE invoices ADD COLUMN paid_amount REAL DEFAULT 0');
+    // Update existing paid invoices to have paid_amount = total
+    await db.run('UPDATE invoices SET paid_amount = total WHERE status = "Paid"');
+  }
+
+  const hasQuoteIdInvoices = invoicesTableInfo.some((col: any) => col.name === 'quote_id');
+  if (!hasQuoteIdInvoices) {
+    await db.run('ALTER TABLE invoices ADD COLUMN quote_id INTEGER REFERENCES quotes(id) ON DELETE SET NULL');
+  }
+
+  // Check if quote_id exists in print_jobs (for migration)
+  const printJobsTableInfo = await db.all("PRAGMA table_info(print_jobs)");
+  const hasQuoteIdPrintJobs = printJobsTableInfo.some((col: any) => col.name === 'quote_id');
+  if (!hasQuoteIdPrintJobs) {
+    await db.run('ALTER TABLE print_jobs ADD COLUMN quote_id INTEGER REFERENCES quotes(id) ON DELETE SET NULL');
   }
 
   return db;
@@ -127,6 +240,117 @@ async function startServer() {
 
   const db = await setupDatabase();
 
+  // --- Auth API ---
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      const { pin_code } = req.body;
+      if (!pin_code) {
+        return res.status(400).json({ error: 'PIN code is required' });
+      }
+
+      const user = await db.get(
+        'SELECT id, name, role, created_at FROM staff_users WHERE pin_code = ?',
+        [pin_code]
+      );
+
+      if (user) {
+        res.json(user);
+      } else {
+        res.status(401).json({ error: 'Invalid PIN code' });
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // --- Staff Management API ---
+  app.get('/api/staff', async (req, res) => {
+    try {
+      const staff = await db.all('SELECT id, name, role, pin_code, created_at FROM staff_users ORDER BY name ASC');
+      res.json(staff);
+    } catch (error) {
+      console.error('Error fetching staff:', error);
+      res.status(500).json({ error: 'Failed to fetch staff' });
+    }
+  });
+
+  app.post('/api/staff', async (req, res) => {
+    try {
+      const { name, role, pin_code } = req.body;
+      if (!name || !role || !pin_code) {
+        return res.status(400).json({ error: 'Name, role, and PIN code are required' });
+      }
+
+      const result = await db.run(
+        'INSERT INTO staff_users (name, role, pin_code) VALUES (?, ?, ?)',
+        [name, role, pin_code]
+      );
+
+      const newStaff = await db.get('SELECT id, name, role, pin_code, created_at FROM staff_users WHERE id = ?', result.lastID);
+      res.status(201).json(newStaff);
+    } catch (error: any) {
+      if (error.message.includes('UNIQUE constraint failed')) {
+        return res.status(400).json({ error: 'PIN code must be unique' });
+      }
+      console.error('Error creating staff:', error);
+      res.status(500).json({ error: 'Failed to create staff' });
+    }
+  });
+
+  app.put('/api/staff/:id', async (req, res) => {
+    try {
+      const { name, role, pin_code } = req.body;
+      const { id } = req.params;
+
+      if (!name || !role || !pin_code) {
+        return res.status(400).json({ error: 'Name, role, and PIN code are required' });
+      }
+
+      await db.run(
+        'UPDATE staff_users SET name = ?, role = ?, pin_code = ? WHERE id = ?',
+        [name, role, pin_code, id]
+      );
+
+      const updatedStaff = await db.get('SELECT id, name, role, pin_code, created_at FROM staff_users WHERE id = ?', id);
+      if (updatedStaff) {
+        res.json(updatedStaff);
+      } else {
+        res.status(404).json({ error: 'Staff member not found' });
+      }
+    } catch (error: any) {
+      if (error.message.includes('UNIQUE constraint failed')) {
+        return res.status(400).json({ error: 'PIN code must be unique' });
+      }
+      console.error('Error updating staff:', error);
+      res.status(500).json({ error: 'Failed to update staff' });
+    }
+  });
+
+  app.delete('/api/staff/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      // Prevent deleting the last admin
+      const adminCount = await db.get("SELECT COUNT(*) as count FROM staff_users WHERE role = 'Admin'");
+      const userToDelete = await db.get("SELECT role FROM staff_users WHERE id = ?", [id]);
+      
+      if (userToDelete && userToDelete.role === 'Admin' && adminCount.count <= 1) {
+        return res.status(400).json({ error: 'Cannot delete the last Admin user' });
+      }
+
+      const result = await db.run('DELETE FROM staff_users WHERE id = ?', [id]);
+      if (result.changes && result.changes > 0) {
+        res.json({ message: 'Staff member deleted successfully' });
+      } else {
+        res.status(404).json({ error: 'Staff member not found' });
+      }
+    } catch (error) {
+      console.error('Error deleting staff:', error);
+      res.status(500).json({ error: 'Failed to delete staff' });
+    }
+  });
+
   // --- Client Management API ---
 
   // getClients()
@@ -136,7 +360,7 @@ async function startServer() {
         SELECT 
           c.*,
           COALESCE(SUM(i.total), 0) as total_spent,
-          COALESCE(SUM(CASE WHEN i.status IN ('Unpaid', 'Partial') THEN i.total ELSE 0 END), 0) as outstanding_dues
+          COALESCE(SUM(i.total - i.paid_amount), 0) as outstanding_dues
         FROM clients c
         LEFT JOIN invoices i ON c.id = CAST(i.client_id AS INTEGER)
         GROUP BY c.id
@@ -156,7 +380,7 @@ async function startServer() {
         SELECT 
           c.*,
           COALESCE(SUM(i.total), 0) as total_spent,
-          COALESCE(SUM(CASE WHEN i.status IN ('Unpaid', 'Partial') THEN i.total ELSE 0 END), 0) as outstanding_dues
+          COALESCE(SUM(i.total - i.paid_amount), 0) as outstanding_dues
         FROM clients c
         LEFT JOIN invoices i ON c.id = CAST(i.client_id AS INTEGER)
         WHERE c.id = ?
@@ -204,6 +428,111 @@ async function startServer() {
     } catch (error) {
       console.error('Error updating client:', error);
       res.status(500).json({ error: 'Failed to update client' });
+    }
+  });
+
+  // POST /api/clients/:id/payments
+  app.post('/api/clients/:id/payments', async (req, res) => {
+    const clientId = req.params.id;
+    const { amount, payment_date, payment_method, receipt_number, notes } = req.body;
+    
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid payment amount' });
+    }
+
+    try {
+      await db.run('BEGIN TRANSACTION');
+
+      // 1. Insert the payment record
+      await db.run(
+        `INSERT INTO customer_payments (client_id, amount, payment_date, payment_method, receipt_number, notes)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [clientId, amount, payment_date, payment_method, receipt_number, notes]
+      );
+
+      // 2. Fetch unpaid/partial invoices for this client, ordered by date ASC (oldest first)
+      const invoices = await db.all(
+        `SELECT id, total, paid_amount, status 
+         FROM invoices 
+         WHERE client_id = ? AND status IN ('Unpaid', 'Partial') 
+         ORDER BY date ASC`,
+        [clientId]
+      );
+
+      let remainingPayment = parseFloat(amount);
+
+      // 3. FIFO Allocation
+      for (const invoice of invoices) {
+        if (remainingPayment <= 0) break;
+
+        const invoiceTotal = parseFloat(invoice.total);
+        const currentPaid = parseFloat(invoice.paid_amount || 0);
+        const amountDue = invoiceTotal - currentPaid;
+
+        if (amountDue > 0) {
+          const amountToApply = Math.min(remainingPayment, amountDue);
+          const newPaidAmount = currentPaid + amountToApply;
+          const newStatus = newPaidAmount >= invoiceTotal ? 'Paid' : 'Partial';
+
+          await db.run(
+            `UPDATE invoices SET paid_amount = ?, status = ? WHERE id = ?`,
+            [newPaidAmount, newStatus, invoice.id]
+          );
+
+          remainingPayment -= amountToApply;
+        }
+      }
+
+      await db.run('COMMIT');
+      res.status(201).json({ success: true, message: 'Payment recorded and allocated successfully' });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error recording payment:', error);
+      res.status(500).json({ error: 'Failed to record payment' });
+    }
+  });
+
+  // GET /api/clients/:id/ledger
+  app.get('/api/clients/:id/ledger', async (req, res) => {
+    const clientId = req.params.id;
+    try {
+      // Fetch invoices
+      const invoices = await db.all(
+        `SELECT id, invoice_number as reference, date, total as amount, 'invoice' as type, status
+         FROM invoices 
+         WHERE client_id = ?`,
+        [clientId]
+      );
+
+      // Fetch payments
+      const payments = await db.all(
+        `SELECT id, receipt_number as reference, payment_date as date, amount, 'payment' as type, payment_method as status
+         FROM customer_payments 
+         WHERE client_id = ?`,
+        [clientId]
+      );
+
+      // Combine and sort chronologically
+      const ledger = [...invoices, ...payments].sort((a, b) => {
+        return new Date(a.date).getTime() - new Date(b.date).getTime();
+      });
+
+      // Calculate running balance
+      let balance = 0;
+      const ledgerWithBalance = ledger.map(item => {
+        const itemAmount = parseFloat(item.amount);
+        if (item.type === 'invoice') {
+          balance += itemAmount;
+        } else {
+          balance -= itemAmount;
+        }
+        return { ...item, balance };
+      });
+
+      res.json(ledgerWithBalance);
+    } catch (error) {
+      console.error('Error fetching ledger:', error);
+      res.status(500).json({ error: 'Failed to fetch ledger' });
     }
   });
 
@@ -509,9 +838,12 @@ async function startServer() {
   app.get('/api/suppliers', async (req, res) => {
     try {
       const suppliers = await db.all(`
-        SELECT s.*, COALESCE(SUM(e.amount), 0) as total_spent
+        SELECT 
+          s.*, 
+          COALESCE(SUM(vb.total), 0) as total_spent,
+          COALESCE(SUM(vb.total - vb.paid_amount), 0) as outstanding_dues
         FROM suppliers s
-        LEFT JOIN expenses e ON s.id = e.supplier_id
+        LEFT JOIN vendor_bills vb ON s.id = vb.supplier_id
         GROUP BY s.id
         ORDER BY s.company_name ASC
       `);
@@ -526,9 +858,12 @@ async function startServer() {
   app.get('/api/suppliers/:id', async (req, res) => {
     try {
       const supplier = await db.get(`
-        SELECT s.*, COALESCE(SUM(e.amount), 0) as total_spent
+        SELECT 
+          s.*, 
+          COALESCE(SUM(vb.total), 0) as total_spent,
+          COALESCE(SUM(vb.total - vb.paid_amount), 0) as outstanding_dues
         FROM suppliers s
-        LEFT JOIN expenses e ON s.id = e.supplier_id
+        LEFT JOIN vendor_bills vb ON s.id = vb.supplier_id
         WHERE s.id = ?
         GROUP BY s.id
       `, req.params.id);
@@ -755,6 +1090,12 @@ async function startServer() {
       subtotal, tax_rate, tax_amount, discount, total, status, items
     } = req.body;
 
+    // Determine initial paid_amount based on status
+    let paid_amount = 0;
+    if (status === 'Paid') {
+      paid_amount = total;
+    }
+
     try {
       await db.run('BEGIN TRANSACTION');
 
@@ -766,9 +1107,9 @@ async function startServer() {
       const result = await db.run(
         `INSERT INTO invoices (
           invoice_number, client_id, client_name, date, due_date,
-          subtotal, tax_rate, tax_amount, discount, total, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [invoice_number, client_id, client_name, date, due_date, subtotal, tax_rate, tax_amount, discount, total, status]
+          subtotal, tax_rate, tax_amount, discount, total, status, paid_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [invoice_number, client_id, client_name, date, due_date, subtotal, tax_rate, tax_amount, discount, total, status, paid_amount]
       );
 
       const invoiceId = result.lastID;
@@ -787,6 +1128,349 @@ async function startServer() {
       await db.run('ROLLBACK');
       console.error('Error creating invoice:', error);
       res.status(500).json({ error: 'Failed to create invoice' });
+    }
+  });
+
+  // --- Quotes Management API ---
+
+  // getQuotes()
+  app.get('/api/quotes', async (req, res) => {
+    try {
+      const quotes = await db.all('SELECT * FROM quotes ORDER BY created_at DESC');
+      res.json(quotes);
+    } catch (error) {
+      console.error('Error fetching quotes:', error);
+      res.status(500).json({ error: 'Failed to fetch quotes' });
+    }
+  });
+
+  // getQuoteById(id)
+  app.get('/api/quotes/:id', async (req, res) => {
+    try {
+      const quote = await db.get('SELECT * FROM quotes WHERE id = ?', req.params.id);
+      if (!quote) {
+        return res.status(404).json({ error: 'Quote not found' });
+      }
+      const items = await db.all('SELECT * FROM quote_items WHERE quote_id = ?', req.params.id);
+      res.json({ ...quote, items });
+    } catch (error) {
+      console.error('Error fetching quote:', error);
+      res.status(500).json({ error: 'Failed to fetch quote' });
+    }
+  });
+
+  // createQuote(data)
+  app.post('/api/quotes', async (req, res) => {
+    const {
+      client_id, client_name, date, valid_until,
+      subtotal, tax_rate, tax_amount, discount, total, status, terms, items
+    } = req.body;
+
+    try {
+      await db.run('BEGIN TRANSACTION');
+
+      const countResult = await db.get('SELECT COUNT(*) as count FROM quotes');
+      const quoteCount = countResult.count + 1;
+      const quote_number = `EST-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${quoteCount.toString().padStart(4, '0')}`;
+
+      const result = await db.run(
+        `INSERT INTO quotes (
+          quote_number, client_id, client_name, date, valid_until,
+          subtotal, tax_rate, tax_amount, discount, total, status, terms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [quote_number, client_id, client_name, date, valid_until, subtotal, tax_rate, tax_amount, discount, total, status, terms]
+      );
+
+      const quoteId = result.lastID;
+
+      for (const item of items) {
+        await db.run(
+          `INSERT INTO quote_items (quote_id, description, quantity, unit_price, total)
+           VALUES (?, ?, ?, ?, ?)`,
+          [quoteId, item.description, item.quantity, item.unit_price, item.total]
+        );
+      }
+
+      await db.run('COMMIT');
+      res.status(201).json({ id: quoteId, quote_number });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error creating quote:', error);
+      res.status(500).json({ error: 'Failed to create quote' });
+    }
+  });
+
+  // updateQuoteStatus(id, status)
+  app.patch('/api/quotes/:id/status', async (req, res) => {
+    const { status } = req.body;
+    try {
+      await db.run('UPDATE quotes SET status = ? WHERE id = ?', [status, req.params.id]);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating quote status:', error);
+      res.status(500).json({ error: 'Failed to update quote status' });
+    }
+  });
+
+  // convertQuoteToJob(id)
+  app.post('/api/quotes/:id/convert-to-job', async (req, res) => {
+    try {
+      await db.run('BEGIN TRANSACTION');
+      
+      const quote = await db.get('SELECT * FROM quotes WHERE id = ?', req.params.id);
+      if (!quote) {
+        await db.run('ROLLBACK');
+        return res.status(404).json({ error: 'Quote not found' });
+      }
+
+      const result = await db.run(
+        `INSERT INTO print_jobs (title, client_id, description, status, due_date, quote_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [`Job from Quote ${quote.quote_number}`, quote.client_id, `Converted from ${quote.quote_number}`, 'Pending', quote.valid_until, quote.id]
+      );
+
+      await db.run('UPDATE quotes SET status = ? WHERE id = ?', ['Accepted', quote.id]);
+
+      await db.run('COMMIT');
+      res.status(201).json({ id: result.lastID, message: 'Converted to Print Job successfully' });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error converting quote to job:', error);
+      res.status(500).json({ error: 'Failed to convert quote to job' });
+    }
+  });
+
+  // convertQuoteToInvoice(id)
+  app.post('/api/quotes/:id/convert-to-invoice', async (req, res) => {
+    try {
+      await db.run('BEGIN TRANSACTION');
+      
+      const quote = await db.get('SELECT * FROM quotes WHERE id = ?', req.params.id);
+      if (!quote) {
+        await db.run('ROLLBACK');
+        return res.status(404).json({ error: 'Quote not found' });
+      }
+
+      const items = await db.all('SELECT * FROM quote_items WHERE quote_id = ?', req.params.id);
+
+      const countResult = await db.get('SELECT COUNT(*) as count FROM invoices');
+      const invoiceCount = countResult.count + 1;
+      const invoice_number = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${invoiceCount.toString().padStart(4, '0')}`;
+
+      const result = await db.run(
+        `INSERT INTO invoices (
+          invoice_number, client_id, client_name, date, due_date,
+          subtotal, tax_rate, tax_amount, discount, total, status, paid_amount, quote_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          invoice_number, quote.client_id, quote.client_name, 
+          new Date().toISOString().slice(0, 10), quote.valid_until, 
+          quote.subtotal, quote.tax_rate, quote.tax_amount, quote.discount, quote.total, 
+          'Unpaid', 0, quote.id
+        ]
+      );
+
+      const invoiceId = result.lastID;
+
+      for (const item of items) {
+        await db.run(
+          `INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, total)
+           VALUES (?, ?, ?, ?, ?)`,
+          [invoiceId, item.description, item.quantity, item.unit_price, item.total]
+        );
+      }
+
+      await db.run('UPDATE quotes SET status = ? WHERE id = ?', ['Accepted', quote.id]);
+
+      await db.run('COMMIT');
+      res.status(201).json({ id: invoiceId, invoice_number, message: 'Converted to Invoice successfully' });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error converting quote to invoice:', error);
+      res.status(500).json({ error: 'Failed to convert quote to invoice' });
+    }
+  });
+
+  // --- Vendor Bills & Supplier Payments API ---
+
+  // getBills()
+  app.get('/api/bills', async (req, res) => {
+    try {
+      const bills = await db.all(`
+        SELECT vb.*, s.company_name as supplier_name
+        FROM vendor_bills vb
+        JOIN suppliers s ON vb.supplier_id = s.id
+        ORDER BY vb.date DESC
+      `);
+      res.json(bills);
+    } catch (error) {
+      console.error('Error fetching vendor bills:', error);
+      res.status(500).json({ error: 'Failed to fetch vendor bills' });
+    }
+  });
+
+  // getBillById(id)
+  app.get('/api/bills/:id', async (req, res) => {
+    try {
+      const bill = await db.get(`
+        SELECT vb.*, s.company_name as supplier_name
+        FROM vendor_bills vb
+        JOIN suppliers s ON vb.supplier_id = s.id
+        WHERE vb.id = ?
+      `, req.params.id);
+      
+      if (!bill) {
+        return res.status(404).json({ error: 'Vendor bill not found' });
+      }
+      
+      const items = await db.all('SELECT * FROM vendor_bill_items WHERE bill_id = ?', req.params.id);
+      res.json({ ...bill, items });
+    } catch (error) {
+      console.error('Error fetching vendor bill:', error);
+      res.status(500).json({ error: 'Failed to fetch vendor bill' });
+    }
+  });
+
+  // createBill(data)
+  app.post('/api/bills', async (req, res) => {
+    const { supplier_id, bill_number, date, due_date, total, items } = req.body;
+
+    try {
+      await db.run('BEGIN TRANSACTION');
+
+      const result = await db.run(
+        `INSERT INTO vendor_bills (supplier_id, bill_number, date, due_date, total, status)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [supplier_id, bill_number, date, due_date, total, 'Unpaid']
+      );
+
+      const billId = result.lastID;
+
+      for (const item of items) {
+        await db.run(
+          `INSERT INTO vendor_bill_items (bill_id, inventory_item_id, description, quantity, unit_cost, total)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [billId, item.inventory_item_id || null, item.description, item.quantity, item.unit_cost, item.total]
+        );
+
+        if (item.inventory_item_id) {
+          await db.run(
+            `UPDATE inventory_items SET current_stock = current_stock + ? WHERE id = ?`,
+            [item.quantity, item.inventory_item_id]
+          );
+
+          await db.run(
+            `INSERT INTO stock_transactions (inventory_item_id, change_amount, type, reason)
+             VALUES (?, ?, ?, ?)`,
+            [item.inventory_item_id, item.quantity, 'Add', `Restock from Bill #${bill_number}`]
+          );
+        }
+      }
+
+      await db.run('COMMIT');
+      res.status(201).json({ id: billId, bill_number });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error creating vendor bill:', error);
+      res.status(500).json({ error: 'Failed to create vendor bill' });
+    }
+  });
+
+  // getSupplierLedger(id)
+  app.get('/api/suppliers/:id/ledger', async (req, res) => {
+    try {
+      const supplierId = req.params.id;
+      
+      const bills = await db.all(`
+        SELECT 
+          id, 
+          bill_number as reference, 
+          date, 
+          total as amount, 
+          'bill' as type,
+          status
+        FROM vendor_bills 
+        WHERE supplier_id = ?
+      `, supplierId);
+
+      const payments = await db.all(`
+        SELECT 
+          id, 
+          COALESCE(reference_number, 'Payment') as reference, 
+          date, 
+          amount, 
+          'payment' as type,
+          'Completed' as status
+        FROM supplier_payments 
+        WHERE supplier_id = ?
+      `, supplierId);
+
+      const ledger = [...bills, ...payments].sort((a, b) => {
+        return new Date(a.date).getTime() - new Date(b.date).getTime();
+      });
+
+      let runningBalance = 0;
+      const ledgerWithBalance = ledger.map(item => {
+        if (item.type === 'bill') {
+          runningBalance += item.amount;
+        } else {
+          runningBalance -= item.amount;
+        }
+        return { ...item, balance: runningBalance };
+      });
+
+      res.json(ledgerWithBalance.reverse());
+    } catch (error) {
+      console.error('Error fetching supplier ledger:', error);
+      res.status(500).json({ error: 'Failed to fetch supplier ledger' });
+    }
+  });
+
+  // recordSupplierPayment(id, data)
+  app.post('/api/suppliers/:id/payments', async (req, res) => {
+    const supplierId = req.params.id;
+    const { amount, date, payment_method, reference_number } = req.body;
+
+    try {
+      await db.run('BEGIN TRANSACTION');
+
+      await db.run(
+        `INSERT INTO supplier_payments (supplier_id, amount, date, payment_method, reference_number)
+         VALUES (?, ?, ?, ?, ?)`,
+        [supplierId, amount, date, payment_method, reference_number]
+      );
+
+      const unpaidBills = await db.all(`
+        SELECT * FROM vendor_bills 
+        WHERE supplier_id = ? AND status IN ('Unpaid', 'Partial')
+        ORDER BY date ASC
+      `, supplierId);
+
+      let remainingPayment = amount;
+
+      for (const bill of unpaidBills) {
+        if (remainingPayment <= 0) break;
+
+        const amountDue = bill.total - bill.paid_amount;
+        const paymentToApply = Math.min(remainingPayment, amountDue);
+        
+        const newPaidAmount = bill.paid_amount + paymentToApply;
+        const newStatus = newPaidAmount >= bill.total ? 'Paid' : 'Partial';
+
+        await db.run(
+          `UPDATE vendor_bills SET paid_amount = ?, status = ? WHERE id = ?`,
+          [newPaidAmount, newStatus, bill.id]
+        );
+
+        remainingPayment -= paymentToApply;
+      }
+
+      await db.run('COMMIT');
+      res.status(201).json({ success: true });
+    } catch (error) {
+      await db.run('ROLLBACK');
+      console.error('Error recording supplier payment:', error);
+      res.status(500).json({ error: 'Failed to record supplier payment' });
     }
   });
 

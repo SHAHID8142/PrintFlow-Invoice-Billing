@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Plus, Calendar as CalendarIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { TrendingUp, TrendingDown, DollarSign, Plus, Calendar as CalendarIcon, Receipt } from 'lucide-react';
 import { format, subMonths, addMonths } from 'date-fns';
 import clsx from 'clsx';
 import ExpenseList from './ExpenseList';
@@ -88,6 +89,14 @@ export default function FinanceDashboard() {
               &rarr;
             </button>
           </div>
+          
+          <Link
+            to="/bills"
+            className="inline-flex items-center justify-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+          >
+            <Receipt className="h-4 w-4 mr-2" />
+            Accounts Payable
+          </Link>
           
           <button
             onClick={openNewExpenseModal}

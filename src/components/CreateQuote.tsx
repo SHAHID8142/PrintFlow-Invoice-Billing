@@ -17,7 +17,13 @@ interface Client {
   company_name: string | null;
 }
 
-export default function CreateInvoice() {
+interface InventoryItem {
+  id: number;
+  name: string;
+  selling_price: number;
+}
+
+export default function CreateQuote() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const defaultClientId = searchParams.get('client') || '';
@@ -25,13 +31,15 @@ export default function CreateInvoice() {
   const [loading, setLoading] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
   const [loadingClients, setLoadingClients] = useState(true);
-  const [previousDue, setPreviousDue] = useState(0);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [loadingInventory, setLoadingInventory] = useState(true);
   
   // Form State
   const [clientId, setClientId] = useState(defaultClientId);
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [dueDate, setDueDate] = useState(format(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'));
-  const [status, setStatus] = useState<'Paid' | 'Unpaid' | 'Partial'>('Unpaid');
+  const [validUntil, setValidUntil] = useState(format(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'));
+  const [status, setStatus] = useState<'Draft' | 'Sent' | 'Accepted' | 'Rejected'>('Draft');
+  const [terms, setTerms] = useState('This quotation is valid for 30 days. Prices are subject to change after this period.');
   const [items, setItems] = useState<LineItem[]>([
     { id: '1', description: '', quantity: 1, unit_price: 0, total: 0 }
   ]);
@@ -52,33 +60,29 @@ export default function CreateInvoice() {
         setLoadingClients(false);
       }
     };
-    fetchClients();
-  }, []);
 
-  useEffect(() => {
-    if (clientId) {
-      const fetchClientDue = async () => {
-        try {
-          const response = await fetch(`/api/clients/${clientId}`);
-          if (response.ok) {
-            const data = await response.json();
-            setPreviousDue(data.outstanding_dues || 0);
-          }
-        } catch (error) {
-          console.error('Failed to fetch client due:', error);
+    const fetchInventory = async () => {
+      try {
+        const response = await fetch('/api/inventory');
+        if (response.ok) {
+          const data = await response.json();
+          setInventory(data);
         }
-      };
-      fetchClientDue();
-    } else {
-      setPreviousDue(0);
-    }
-  }, [clientId]);
+      } catch (error) {
+        console.error('Failed to fetch inventory:', error);
+      } finally {
+        setLoadingInventory(false);
+      }
+    };
+
+    fetchClients();
+    fetchInventory();
+  }, []);
 
   // Calculations
   const subtotal = items.reduce((sum, item) => sum + item.total, 0);
   const taxAmount = (subtotal - discount) * (taxRate / 100);
   const total = subtotal - discount + taxAmount;
-  const grandTotal = total + previousDue;
 
   const handleAddItem = () => {
     setItems([
@@ -107,6 +111,24 @@ export default function CreateInvoice() {
     }));
   };
 
+  const handleInventorySelect = (id: string, inventoryId: string) => {
+    const selectedItem = inventory.find(item => item.id.toString() === inventoryId);
+    if (selectedItem) {
+      setItems(items.map(item => {
+        if (item.id === id) {
+          const updatedItem = { 
+            ...item, 
+            description: selectedItem.name, 
+            unit_price: selectedItem.selling_price,
+            total: item.quantity * selectedItem.selling_price
+          };
+          return updatedItem;
+        }
+        return item;
+      }));
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!clientId) {
@@ -117,36 +139,37 @@ export default function CreateInvoice() {
     setLoading(true);
     const clientName = clients.find(c => c.id.toString() === clientId)?.full_name || 'Unknown';
 
-    const invoiceData = {
+    const quoteData = {
       client_id: clientId,
       client_name: clientName,
       date,
-      due_date: dueDate,
+      valid_until: validUntil,
       subtotal,
       tax_rate: taxRate,
       tax_amount: taxAmount,
       discount,
       total,
       status,
+      terms,
       items: items.filter(item => item.description.trim() !== '') // Filter empty items
     };
 
     try {
-      const response = await fetch('/api/invoices', {
+      const response = await fetch('/api/quotes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(invoiceData)
+        body: JSON.stringify(quoteData)
       });
 
       if (response.ok) {
         const data = await response.json();
-        navigate(`/invoice/${data.id}`);
+        navigate(`/quotes/${data.id}`);
       } else {
-        throw new Error('Failed to create invoice');
+        throw new Error('Failed to create quote');
       }
     } catch (error) {
       console.error('Error:', error);
-      alert('Failed to create invoice. Please try again.');
+      alert('Failed to create quote. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -159,20 +182,20 @@ export default function CreateInvoice() {
         <div className="flex items-center space-x-4">
           <button
             type="button"
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/quotes')}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Create Invoice</h1>
-            <p className="text-sm text-slate-500 mt-1">Fill in the details to generate a new invoice.</p>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Create Quote</h1>
+            <p className="text-sm text-slate-500 mt-1">Fill in the details to generate a new estimate.</p>
           </div>
         </div>
         <div className="flex items-center space-x-3">
           <button
             type="button"
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/quotes')}
             className="px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
           >
             Cancel
@@ -185,7 +208,7 @@ export default function CreateInvoice() {
             {loading ? 'Saving...' : (
               <>
                 <Save className="h-4 w-4 mr-2" />
-                Save Invoice
+                Save Quote
               </>
             )}
           </button>
@@ -223,7 +246,7 @@ export default function CreateInvoice() {
               </div>
               <div>
                 <label htmlFor="date" className="block text-sm font-medium text-slate-700 mb-1">
-                  Invoice Date
+                  Quote Date
                 </label>
                 <input
                   type="date"
@@ -235,15 +258,15 @@ export default function CreateInvoice() {
                 />
               </div>
               <div>
-                <label htmlFor="dueDate" className="block text-sm font-medium text-slate-700 mb-1">
-                  Due Date
+                <label htmlFor="validUntil" className="block text-sm font-medium text-slate-700 mb-1">
+                  Valid Until
                 </label>
                 <input
                   type="date"
-                  id="dueDate"
+                  id="validUntil"
                   required
-                  value={dueDate}
-                  onChange={(e) => setDueDate(e.target.value)}
+                  value={validUntil}
+                  onChange={(e) => setValidUntil(e.target.value)}
                   className="block w-full border-slate-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border px-3 py-2"
                 />
               </div>
@@ -268,16 +291,28 @@ export default function CreateInvoice() {
               {/* Items */}
               {items.map((item, index) => (
                 <div key={item.id} className="group relative grid grid-cols-1 sm:grid-cols-12 gap-4 items-start sm:items-center p-4 sm:p-2 border border-slate-200 sm:border-transparent rounded-lg sm:hover:bg-slate-50 transition-colors">
-                  <div className="sm:col-span-6">
+                  <div className="sm:col-span-6 space-y-2">
                     <label className="block sm:hidden text-xs font-medium text-slate-500 mb-1">Description</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Item description..."
-                      value={item.description}
-                      onChange={(e) => handleItemChange(item.id, 'description', e.target.value)}
-                      className="block w-full border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border px-3 py-2"
-                    />
+                    <div className="flex gap-2">
+                      <select
+                        onChange={(e) => handleInventorySelect(item.id, e.target.value)}
+                        defaultValue=""
+                        className="block w-1/3 border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border px-3 py-2 bg-white"
+                      >
+                        <option value="" disabled>Select Item...</option>
+                        {inventory.map(invItem => (
+                          <option key={invItem.id} value={invItem.id}>{invItem.name}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Item description..."
+                        value={item.description}
+                        onChange={(e) => handleItemChange(item.id, 'description', e.target.value)}
+                        className="block w-2/3 border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border px-3 py-2"
+                      />
+                    </div>
                   </div>
                   <div className="sm:col-span-2">
                     <label className="block sm:hidden text-xs font-medium text-slate-500 mb-1">Quantity</label>
@@ -335,6 +370,18 @@ export default function CreateInvoice() {
               <Plus className="h-4 w-4 mr-2" />
               Add Item
             </button>
+          </div>
+
+          {/* Terms & Conditions */}
+          <div className="bg-white shadow-sm rounded-xl border border-slate-200 p-6">
+            <h2 className="text-lg font-semibold text-slate-900 mb-4">Terms & Conditions</h2>
+            <textarea
+              rows={4}
+              value={terms}
+              onChange={(e) => setTerms(e.target.value)}
+              className="block w-full border-slate-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border px-3 py-2"
+              placeholder="Enter terms and conditions for this quote..."
+            />
           </div>
         </div>
 
@@ -398,20 +445,8 @@ export default function CreateInvoice() {
               </div>
 
               <div className="flex justify-between items-center pt-4 border-t border-slate-200">
-                <span className="text-base font-bold text-slate-900">Current Total</span>
-                <span className="text-xl font-bold text-slate-900">${total.toFixed(2)}</span>
-              </div>
-
-              {previousDue > 0 && (
-                <div className="flex justify-between items-center pt-2 text-rose-600">
-                  <span className="text-sm font-medium">Previous Due</span>
-                  <span className="text-sm font-bold">+${previousDue.toFixed(2)}</span>
-                </div>
-              )}
-
-              <div className="flex justify-between items-center pt-4 border-t-2 border-slate-900">
-                <span className="text-lg font-bold text-slate-900">Grand Total</span>
-                <span className="text-2xl font-bold text-indigo-600">${grandTotal.toFixed(2)}</span>
+                <span className="text-base font-bold text-slate-900">Total</span>
+                <span className="text-2xl font-bold text-indigo-600">${total.toFixed(2)}</span>
               </div>
             </div>
 
@@ -425,9 +460,10 @@ export default function CreateInvoice() {
                 onChange={(e) => setStatus(e.target.value as any)}
                 className="block w-full pl-3 pr-10 py-2 text-base border-slate-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-lg border bg-white"
               >
-                <option value="Unpaid">Unpaid</option>
-                <option value="Partial">Partial</option>
-                <option value="Paid">Paid</option>
+                <option value="Draft">Draft</option>
+                <option value="Sent">Sent</option>
+                <option value="Accepted">Accepted</option>
+                <option value="Rejected">Rejected</option>
               </select>
             </div>
           </div>

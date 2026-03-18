@@ -10,6 +10,7 @@ interface Supplier {
   email: string | null;
   supply_category: string | null;
   total_spent: number;
+  outstanding_dues: number;
 }
 
 export default function SupplierList() {
@@ -89,7 +90,8 @@ export default function SupplierList() {
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Company</th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Contact</th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Category</th>
-                  <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Total Spent</th>
+                  <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Total Billed</th>
+                  <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Outstanding</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-200">
@@ -141,6 +143,9 @@ export default function SupplierList() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 text-right font-medium">
                       ${supplier.total_spent.toFixed(2)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-rose-600 text-right font-medium">
+                      ${supplier.outstanding_dues.toFixed(2)}
                     </td>
                   </tr>
                 ))}
